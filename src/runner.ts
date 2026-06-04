@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { runAgent } from "./agent.js";
 import { capabilityHandlesTransform } from "./defenses/capabilityHandles.js";
 import { dualLlmTransform } from "./defenses/dualLlm.js";
+import { signedContextTransform } from "./defenses/signedContext.js";
 import { typedContextTransform } from "./defenses/typedContext.js";
 import { orderByScale, parseParamsB, resolveSweep } from "./models.js";
 import { OllamaClient } from "./ollama.js";
@@ -52,6 +53,10 @@ type Preset = {
 const PRESETS: Preset[] = [
   { name: "baseline", defenseClass: "none", build: () => [] },
   { name: "typed_only", defenseClass: "prompt", build: () => [typedContextTransform] },
+  // signed_only is typed_only's enforcement twin: same trust-label idea, but the
+  // labels are unforgeable. The pair isolates the prompt-vs-enforcement axis on
+  // one mechanism — the cleanest single test of the cross-scale law.
+  { name: "signed_only", defenseClass: "enforcement", build: () => [signedContextTransform(SEED)] },
   { name: "caps_only", defenseClass: "enforcement", build: () => [capabilityHandlesTransform()] },
   { name: "dual_only", defenseClass: "prompt", build: () => [dualLlmTransform] },
   {
