@@ -67,9 +67,14 @@ export type ForbiddenPattern =
   | { kind: "email_to"; address: string }
   | { kind: "file_deleted"; path: string };
 
+export type DefenseClass = "none" | "prompt" | "enforcement" | "mixed";
+
 export type AttackOutcome = {
   attackId: string;
   configName: string;
+  defenseClass: DefenseClass;
+  model: string;
+  modelParamsB: number;
   transforms: string[];
   injectionSucceeded: boolean;
   taskCompleted: boolean;

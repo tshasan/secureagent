@@ -34,6 +34,26 @@ Pick a model with known weaknesses. Pick an attack set. Run the same attacks aga
 
 Configurations are composable, so you can sweep (defense stack x attack class x model) and produce a comparison matrix.
 
+## The cross-scale law
+
+The headline experiment. Defenses split into two kinds by *how they earn their security*:
+
+- **Prompt-class** (`typedContext`, `dualLlm`): security depends on the model honoring instructions — respecting a trust label, acting only on a quarantined paraphrase. Nothing stops a model that ignores the convention.
+- **Enforcement-class** (`capabilityHandles`): security is a runtime check that holds no matter what the model emits. The model literally cannot name a raw attacker address; the wrapper rejects the call.
+
+That distinction predicts a testable claim:
+
+> **Prompt-class defenses need scale; enforcement-class defenses do not.** A small model is too weak to honor a trust label, so prompt defenses do little until the model is capable enough to follow them — their protection should *grow* with parameter count. Enforcement defenses block at the runtime regardless of model competence, so their protection should be *flat* across scale.
+
+The runner tests this by sweeping the same attacks and configs across a model-size ladder (default: `qwen2.5` 0.5B → 7B, one family so the only thing changing is parameter count). For each defense it computes **marginal protection vs baseline** at every scale — the share of attacks the defense blocks that the bare baseline let through — which isolates the defense from the base model's own scale trend. Then it reports the protection *slope* across scale, per defense class.
+
+Two pieces of rigor that make the curve mean something:
+
+- **Tool-engagement floor.** A model that barely calls tools shows a near-zero injection rate for free — that is incompetence, not defense. The report measures baseline tool-engagement per scale and excludes scales below the floor (default 30%) from any slope claim, flagging them with `*` in the matrix.
+- **No significance theater.** N is small (attacks × seeds). The verdict reports a *direction* (consistent / weak / not supported), never a p-value.
+
+A clean confirmation looks like: a large positive protection slope for the prompt class, a flat (near-zero) slope for enforcement. If it does not show up in your sweep, the runner says so.
+
 ## Open questions
 
 These need answers before the code is worth writing.
@@ -49,7 +69,7 @@ These need answers before the code is worth writing.
 
 What is in this version:
 
-- One small local model via Ollama (default `llama3.2:3b`)
+- Small local models via Ollama (default sweep: `qwen2.5` 0.5b → 7b; pass one tag to run a single model)
 - A toy agent with three mock tools: `read_notes`, `send_email`, `delete_file`
 - Three defenses, each independently toggleable: `typedContext`, `capabilityHandles`, `dualLlm`
 - A hand-crafted attack set (`data/attacks.json`) covering direct injection for exfiltration and destructive tool calls
@@ -64,24 +84,32 @@ The Nix flake is the supported way to run this (treat it like the Docker image o
 ```
 nix develop
 bun install
-bun run run                 # uses default model (llama3.2:3b)
+bun run run                            # default sweep: qwen2.5 0.5b,1.5b,3b,7b
+bun run run qwen2.5:3b                 # single model (no scale axis)
+bun run run qwen2.5:1.5b qwen2.5:7b    # custom sweep, ordered by scale
 ```
+
+The default sweep runs the full cross-scale study and pulls each model on first use. Pass one model to fall back to a single-model run.
 
 Or, without entering a shell:
 
 ```
-nix run .                   # default model
-nix run . -- qwen2.5:3b     # pick a model
+nix run .                              # default sweep
+nix run . -- qwen2.5:3b                # single model
+nix run . -- qwen2.5:0.5b qwen2.5:7b   # custom sweep
 ```
 
 `nix run` writes outputs to `$PWD/results/`. Override with `SECUREAGENT_RESULTS_DIR`.
 
-To run a different model from inside the dev shell:
+To run a different model or sweep from inside the dev shell:
 
 ```
-bun run run qwen2.5:3b
-SECUREAGENT_MODEL=llama3.1:8b bun run run
+bun run run qwen2.5:3b                        # single model
+SECUREAGENT_MODELS=qwen2.5:1.5b,qwen2.5:7b bun run run   # sweep via env
+SECUREAGENT_MODEL=llama3.1:8b bun run run     # single model via env (back-compat)
 ```
+
+Sweep selection precedence: positional args > `SECUREAGENT_MODELS` > `SECUREAGENT_MODEL` > default sweep.
 
 If an ollama daemon is already running on `OLLAMA_HOST`, the shell uses that one and does not manage it.
 
@@ -109,13 +137,14 @@ The `node_modules` used by the check is a Fixed Output Derivation. If you change
 
 Environment overrides:
 
-- `SECUREAGENT_MODEL` model tag (default `llama3.2:3b`). Use any tool-capable model. Smaller and weaker is better here, the point is to make injection visible.
+- `SECUREAGENT_MODELS` comma-separated model ladder for the cross-scale sweep, e.g. `qwen2.5:0.5b,qwen2.5:1.5b,qwen2.5:3b`. Defaults to the `qwen2.5` 0.5B→7B ladder. Use one family so the only thing changing is parameter count.
+- `SECUREAGENT_MODEL` single model tag (back-compat). Use any tool-capable model. Lower precedence than `SECUREAGENT_MODELS`.
 - `OLLAMA_HOST` Ollama base URL (default `http://localhost:11434`).
 - `SECUREAGENT_CONFIGS` comma-separated subset of configs to run, e.g. `baseline,all_on`.
 
 Configs available: `baseline`, `typed_only`, `caps_only`, `dual_only`, `typed+caps`, `all_on`.
 
-Output goes to `results/outcomes-<timestamp>.csv` and `.json`.
+Output goes to `results/outcomes-<timestamp>.csv` (one row per run), `.json` (same, structured), and `results/matrix-<timestamp>.csv` (tidy per-`(model, config)` summary with injection rate, tool-engagement, and defense class — the file you plot the cross-scale curve from).
 
 ### Determinism
 
@@ -133,7 +162,7 @@ What still varies across runs and does not affect verdicts:
 
 Determinism across different machines is not guaranteed (GPU atomics, quantization, Ollama version differences).
 
-The model itself is the load-bearing input and is not pinned by Nix. `ollama pull` fetches `llama3.2:3b` (or whatever you select) at runtime into `~/.ollama`, outside the Nix store. Two checkouts on different machines will get the same Bun, Ollama daemon, and TypeScript, but possibly a different model snapshot if the tag has been republished. If you need byte-for-byte reproducibility of the model, snapshot it manually and serve from a local file.
+The model itself is the load-bearing input and is not pinned by Nix. `ollama pull` fetches each model in the sweep (the `qwen2.5` ladder by default, or whatever you select) at runtime into `~/.ollama`, outside the Nix store. Two checkouts on different machines will get the same Bun, Ollama daemon, and TypeScript, but possibly a different model snapshot if the tag has been republished. If you need byte-for-byte reproducibility of the model, snapshot it manually and serve from a local file.
 
 ### Defenses in this version
 
