@@ -1,0 +1,24 @@
+{
+  "name": "secureagent",
+  "version": "0.0.1",
+  "description": "An agent harness for testing prompt-injection defenses at the architecture level. Swap in different security designs and run them against the same injection benchmark on a local Ollama model.",
+  "license": "Apache-2.0",
+  "author": "Taimur Hasan",
+  "type": "module",
+  "keywords": [
+    "prompt-injection",
+    "llm-security",
+    "agent",
+    "ollama",
+    "benchmark"
+  ],
+  "scripts": {
+    "run": "bun run src/runner.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
+  }
+}

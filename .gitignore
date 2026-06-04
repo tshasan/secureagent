@@ -1,0 +1,9 @@
+node_modules/
+dist/
+results/
+.direnv/
+.ollama/
+result
+
+# Local Claude Code settings (machine-specific)
+.claude/settings.local.json
