@@ -21,8 +21,14 @@ import { capabilityHandlesTransform } from "./defenses/capabilityHandles.js";
 import { dualLlmTransform } from "./defenses/dualLlm.js";
 import { signedContextTransform } from "./defenses/signedContext.js";
 import { typedContextTransform } from "./defenses/typedContext.js";
+import {
+  createClient,
+  providerEndpoint,
+  type ProviderEnv,
+  type ProviderName,
+  resolveProvider,
+} from "./llm.js";
 import { orderByScale, parseParamsB, resolveSweep } from "./models.js";
-import { OllamaClient } from "./ollama.js";
 import type { Transform } from "./pipeline.js";
 import { renderMatrix, renderScaleAnalysis, summarize, tidyCsv } from "./report.js";
 import { injectionSucceeded } from "./scoring.js";
@@ -38,7 +44,12 @@ const SWEEP = orderByScale(
     model: process.env["SECUREAGENT_MODEL"],
   }),
 );
-const HOST = normalizeHost(process.env["OLLAMA_HOST"] ?? "http://127.0.0.1:11434");
+const PROVIDER_ENV: ProviderEnv = {
+  provider: process.env["SECUREAGENT_PROVIDER"],
+  ollamaHost: process.env["OLLAMA_HOST"],
+  openrouterKey: process.env["OPENROUTER_API_KEY"],
+  openrouterBaseUrl: process.env["OPENROUTER_BASE_URL"],
+};
 const SEED = parseSeed(process.env["SECUREAGENT_SEED"]);
 const MAX_TURNS = 6;
 // Every completed run is appended here as one JSON line the moment it finishes,
@@ -90,12 +101,25 @@ const PRESETS: Preset[] = [
 const CLASS_OF = new Map<string, DefenseClass>(PRESETS.map((p) => [p.name, p.defenseClass]));
 
 async function main(): Promise<void> {
-  const client = new OllamaClient(HOST);
+  let provider: ProviderName;
+  try {
+    provider = resolveProvider(PROVIDER_ENV);
+  } catch (e) {
+    console.error(errString(e));
+    process.exit(1);
+  }
+  const endpoint = providerEndpoint(provider, PROVIDER_ENV);
+
+  const client = createClient(provider, PROVIDER_ENV);
   try {
     await client.ping();
   } catch (e) {
-    console.error(`Cannot reach Ollama at ${HOST}: ${errString(e)}`);
-    console.error("Start it with `ollama serve` or enter the nix dev shell.");
+    console.error(`Cannot reach ${provider} at ${endpoint}: ${errString(e)}`);
+    if (provider === "ollama") {
+      console.error("Start it with `ollama serve` or enter the nix dev shell.");
+    } else {
+      console.error("Check OPENROUTER_API_KEY and your network connection.");
+    }
     process.exit(1);
   }
 
@@ -138,7 +162,7 @@ async function main(): Promise<void> {
   const completed = loadCheckpoint(CHECKPOINT);
 
   console.log(`Sweep:       ${SWEEP.join(", ")}`);
-  console.log(`Host:        ${HOST}`);
+  console.log(`Provider:    ${provider} (${endpoint})`);
   console.log(`Seed:        ${SEED}`);
   console.log(`Concurrency: ${CONCURRENCY}`);
   console.log(`Configs:     ${presets.map((p) => p.name).join(", ")}`);
@@ -320,10 +344,6 @@ function writeOutputs(outcomes: AttackOutcome[]): void {
   console.log(`\nWrote ${csvPath}`);
   console.log(`Wrote ${jsonPath}`);
   console.log(`Wrote ${matrixPath}`);
-}
-
-function normalizeHost(h: string): string {
-  return /^https?:\/\//.test(h) ? h : `http://${h}`;
 }
 
 function positionalArgs(args: string[]): string[] {

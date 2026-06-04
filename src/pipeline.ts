@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type { OllamaClient } from "./ollama.js";
+import type { ChatClient } from "./llm.js";
 import type { ToolCall, ToolSpec } from "./types.js";
 
 export type StaticCtx = Record<string, never>;
 
 export type RequestCtx = {
-  client: OllamaClient;
+  client: ChatClient;
   model: string;
   seed: number;
 };

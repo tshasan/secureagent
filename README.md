@@ -2,7 +2,7 @@
 
 A harness for testing prompt-injection defenses at the **architecture** level instead of the model level. Swap in different security designs, run them against the same attack set on the same local model, and see which patterns help and by how much.
 
-Side project. Runs against a small model via Ollama — no API costs, fast to iterate, small enough to drop in your own defense.
+Side project. Runs against a small model via Ollama — no API costs, fast to iterate, small enough to drop in your own defense. Can also run against any model on [OpenRouter](https://openrouter.ai) when you want to reach past local hardware.
 
 ## The idea
 
@@ -66,14 +66,32 @@ Or without a shell: `nix run .` (writes to `$PWD/results/`), `nix run . -- qwen2
 
 Sweep selection precedence: positional args > `SECUREAGENT_MODELS` > `SECUREAGENT_MODEL` > default.
 
+### Providers
+
+Two backends, one provider-neutral chat interface (`src/llm.ts`). The agent loop and every defense are written against it, so neither knows or cares which backend answers.
+
+- **`ollama`** (default) — local models, pulled on first use. The scale study above assumes this.
+- **`openrouter`** — any model on [OpenRouter](https://openrouter.ai). Set `OPENROUTER_API_KEY` and it is selected automatically (or force it with `SECUREAGENT_PROVIDER=openrouter`); models are remote, so nothing is pulled.
+
+```
+export OPENROUTER_API_KEY=sk-or-...
+bun run run openai/gpt-4o-mini                 # single hosted model
+bun run run anthropic/claude-3.5-haiku meta-llama/llama-3.1-8b-instruct
+```
+
+Two caveats for hosted models. First, **determinism is best-effort** — a `seed` and `temperature=0` are passed through, but hosted backends do not guarantee bit-identical sampling the way a pinned local model does, so verdicts may drift between runs. Second, the **scale axis does not apply**: `parseParamsB` reads a size from an Ollama-style tag (`qwen2.5:7b`), so an OpenRouter id like `openai/gpt-4o-mini` parses as unknown size and sorts to the end. Use OpenRouter for per-model spot checks, not for the cross-scale slope.
+
 | env | meaning |
 | --- | --- |
 | `SECUREAGENT_MODELS` | comma-separated model ladder (use one family) |
 | `SECUREAGENT_MODEL` | single model tag (back-compat) |
 | `SECUREAGENT_CONFIGS` | subset of `baseline,typed_only,signed_only,caps_only,dual_only,typed+caps,all_on` |
 | `SECUREAGENT_CONCURRENCY` | runs in flight per model (default `4`); raise on a big machine, set `1` for serial |
+| `SECUREAGENT_PROVIDER` | `ollama` (default) or `openrouter`; auto-selects `openrouter` when `OPENROUTER_API_KEY` is set |
 | `OLLAMA_HOST` | Ollama base URL (default `http://localhost:11434`) |
 | `OLLAMA_NUM_PARALLEL` | Ollama's own parallel-request cap; keep `>= SECUREAGENT_CONCURRENCY` |
+| `OPENROUTER_API_KEY` | OpenRouter API key; required when the provider is `openrouter` |
+| `OPENROUTER_BASE_URL` | OpenRouter base URL (default `https://openrouter.ai/api/v1`) |
 | `SECUREAGENT_SEED` | sampler seed (default `42`) |
 | `SECUREAGENT_CHECKPOINT` | checkpoint path (default `results/checkpoint-seed-<seed>.jsonl`) |
 

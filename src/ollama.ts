@@ -12,74 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export type OllamaRole = "system" | "user" | "assistant" | "tool";
+import type { ChatClient, ChatRequest, ChatResponse } from "./llm.js";
 
-export type OllamaToolCall = {
-  function: {
-    name: string;
-    arguments: Record<string, unknown>;
-  };
-};
-
-export type OllamaMessage = {
-  role: OllamaRole;
-  content: string;
-  tool_calls?: OllamaToolCall[];
-};
-
-export type OllamaFunctionTool = {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-};
-
-export type OllamaChatRequest = {
-  model: string;
-  messages: OllamaMessage[];
-  tools?: OllamaFunctionTool[];
-  stream: false;
-  options?: {
-    temperature?: number;
-    num_predict?: number;
-    seed?: number;
-    top_k?: number;
-    top_p?: number;
-    num_ctx?: number;
-  };
-  format?: "json";
-  // How long Ollama keeps the model resident after this request. A sweep fires
-  // many back-to-back calls against one model, so holding it in memory between
-  // them avoids reload churn (the dominant per-call overhead once weights are
-  // cached). Does not affect outputs, only latency.
-  keep_alive?: string | number;
-};
-
-export type OllamaChatResponse = {
-  model: string;
-  message: OllamaMessage;
-  done: boolean;
-};
-
-export class OllamaClient {
+export class OllamaClient implements ChatClient {
   constructor(
     private readonly host: string,
     private readonly keepAlive: string | number = "10m",
   ) {}
 
-  async chat(req: OllamaChatRequest): Promise<OllamaChatResponse> {
+  async chat(req: ChatRequest): Promise<ChatResponse> {
     const res = await fetch(`${this.host}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
+      // `keep_alive` holds the model resident between the back-to-back calls of
+      // a sweep, so they skip reload churn. It affects latency only, not output.
       body: JSON.stringify({ keep_alive: this.keepAlive, ...req }),
     });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Ollama ${res.status}: ${body.slice(0, 400)}`);
     }
-    return (await res.json()) as OllamaChatResponse;
+    return (await res.json()) as ChatResponse;
   }
 
   async ping(): Promise<void> {

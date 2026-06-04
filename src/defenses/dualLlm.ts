@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type { OllamaClient } from "../ollama.js";
+import type { ChatClient } from "../llm.js";
 import type { Transform } from "../pipeline.js";
 import { deterministicSampling } from "../sampling.js";
 
@@ -47,7 +47,7 @@ export const dualLlmTransform: Transform = {
 };
 
 async function extractIntent(
-  client: OllamaClient,
+  client: ChatClient,
   model: string,
   seed: number,
   userInput: string,
