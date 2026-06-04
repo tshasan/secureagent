@@ -50,6 +50,11 @@ export type OllamaChatRequest = {
     num_ctx?: number;
   };
   format?: "json";
+  // How long Ollama keeps the model resident after this request. A sweep fires
+  // many back-to-back calls against one model, so holding it in memory between
+  // them avoids reload churn (the dominant per-call overhead once weights are
+  // cached). Does not affect outputs, only latency.
+  keep_alive?: string | number;
 };
 
 export type OllamaChatResponse = {
@@ -59,13 +64,16 @@ export type OllamaChatResponse = {
 };
 
 export class OllamaClient {
-  constructor(private readonly host: string) {}
+  constructor(
+    private readonly host: string,
+    private readonly keepAlive: string | number = "10m",
+  ) {}
 
   async chat(req: OllamaChatRequest): Promise<OllamaChatResponse> {
     const res = await fetch(`${this.host}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(req),
+      body: JSON.stringify({ keep_alive: this.keepAlive, ...req }),
     });
     if (!res.ok) {
       const body = await res.text();

@@ -6,17 +6,22 @@ contributions are new defenses, new attacks, and better scoring oracles.
 
 ## Getting set up
 
-The Nix flake is the supported dev environment (see the README for the full
-rundown). The short version:
+Two supported environments (see the README for the full rundown).
+
+Bun-native — install [Bun](https://bun.sh) and [Ollama](https://ollama.com):
+
+```
+bun install
+bun run bench      # starts ollama if needed, then runs the default sweep
+```
+
+Nix flake:
 
 ```
 nix develop        # starts ollama in the background, drops you in a shell
 bun install
-bun run run        # runs the benchmark against the default model
+bun run run        # runs the benchmark against the default sweep
 ```
-
-Without Nix: install [Bun](https://bun.sh) and [Ollama](https://ollama.com),
-start `ollama serve`, then `bun install && bun run run`.
 
 Before opening a PR:
 

@@ -24,7 +24,7 @@ Planned: URL references, indirect-injection scenarios.
 The headline experiment. Defenses split by *how they earn their security*:
 
 - **Prompt-class** (`typedContext`, `dualLlm`) — security depends on the model honoring a convention. Nothing stops a model that ignores it.
-- **Enforcement-class** (`capabilityHandles`, `signedContext`) — security is a runtime check. The model literally cannot name a raw attacker address, nor see a forged authority block; the wrapper rejects or strips it.
+- **Enforcement-class** (`capabilityHandles`, `signedContext`) — security is a runtime check. The model cannot name a raw attacker address, nor see a forged authority block; the wrapper rejects or strips it.
 
 The cleanest single test of this is `typed_only` vs `signed_only`: the same trust-label mechanism, one relying on the model and one enforced at the runtime. If the law holds, the prompt version's protection climbs with scale while the signed version stays flat.
 
@@ -41,19 +41,28 @@ Two guards keep the curve honest:
 
 ## Run
 
-The Nix flake is the supported path — entering the dev shell starts `ollama serve` in the background and cleans it up on exit. The runner pulls each model on first use.
+Two supported paths. Both pull each model on first use.
+
+**Bun-native (no Nix).** Install [Bun](https://bun.sh) and [Ollama](https://ollama.com), then:
+
+```
+bun install
+bun run bench                          # starts ollama if needed, then the default sweep
+bun run bench qwen2.5:3b               # single model (no scale axis)
+```
+
+`bun run bench` calls `scripts/serve-ollama.sh` first, which starts `ollama serve` in the background only if it is not already up (and sets `OLLAMA_NUM_PARALLEL` so concurrent runs overlap). Stop a server it started with `bun run ollama:stop`. If you manage Ollama yourself, skip straight to `bun run run [model...]`.
+
+**Nix flake.** Still supported — entering the dev shell starts `ollama serve` in the background and cleans it up on exit:
 
 ```
 nix develop
 bun install
 bun run run                            # default sweep: qwen2.5 0.5b,1.5b,3b,7b
-bun run run qwen2.5:3b                 # single model (no scale axis)
 bun run run qwen2.5:1.5b qwen2.5:7b    # custom sweep, ordered by scale
 ```
 
-Or without a shell: `nix run .` (writes to `$PWD/results/`), `nix run . -- qwen2.5:3b`.
-
-Already have Ollama on PATH? Use `nix develop .#bare` to skip a second copy in the Nix store. Without Nix: install [Bun](https://bun.sh) and Ollama, run `ollama serve`, then `bun install && bun run run`.
+Or without a shell: `nix run .` (writes to `$PWD/results/`), `nix run . -- qwen2.5:3b`. Already have Ollama on PATH? `nix develop .#bare` skips a second copy in the Nix store.
 
 Sweep selection precedence: positional args > `SECUREAGENT_MODELS` > `SECUREAGENT_MODEL` > default.
 
@@ -62,10 +71,21 @@ Sweep selection precedence: positional args > `SECUREAGENT_MODELS` > `SECUREAGEN
 | `SECUREAGENT_MODELS` | comma-separated model ladder (use one family) |
 | `SECUREAGENT_MODEL` | single model tag (back-compat) |
 | `SECUREAGENT_CONFIGS` | subset of `baseline,typed_only,signed_only,caps_only,dual_only,typed+caps,all_on` |
+| `SECUREAGENT_CONCURRENCY` | runs in flight per model (default `4`); raise on a big machine, set `1` for serial |
 | `OLLAMA_HOST` | Ollama base URL (default `http://localhost:11434`) |
+| `OLLAMA_NUM_PARALLEL` | Ollama's own parallel-request cap; keep `>= SECUREAGENT_CONCURRENCY` |
 | `SECUREAGENT_SEED` | sampler seed (default `42`) |
+| `SECUREAGENT_CHECKPOINT` | checkpoint path (default `results/checkpoint-seed-<seed>.jsonl`) |
+
+### Speed & memory
+
+Runs within a model fire concurrently (`SECUREAGENT_CONCURRENCY`, default 4); the model sweep itself stays sequential so only **one** model is resident at a time — the speedup costs no extra memory. To run in parallel, Ollama needs `OLLAMA_NUM_PARALLEL >= SECUREAGENT_CONCURRENCY` (the serve script sets it to 4); otherwise concurrent requests just queue. Models are held warm between calls (`keep_alive`) so back-to-back runs skip reload. None of this touches verdicts — see Determinism.
 
 Outputs land in `results/`: `outcomes-<ts>.csv`/`.json` (one row per run) and `matrix-<ts>.csv` (per-`(model, config)` summary — the file you plot the curve from).
+
+### Resume
+
+Each run is appended to a checkpoint (`SECUREAGENT_CHECKPOINT`, default `results/checkpoint-seed-<seed>.jsonl`) the moment it finishes, so a crash or Ctrl-C mid-sweep loses nothing. Re-run the same command and it skips runs already recorded and picks up where it stopped; infrastructure failures (Ollama unreachable, unexpected errors) are retried, settled results aren't. The checkpoint is keyed by seed and removed once the final outputs are written. Because it skips by `(model, config, attack)`, changing the model ladder or config subset between runs is safe; changing the seed starts a fresh checkpoint.
 
 `nix flake check` runs `tsc --noEmit` in a hermetic derivation. (Changing `package.json`/`bun.lock` means re-pinning the `node_modules` FOD hash — see the comment in `flake.nix`.)
 
@@ -73,11 +93,9 @@ Outputs land in `results/`: `outcomes-<ts>.csv`/`.json` (one row per run) and `m
 
 Scoring is deterministic. Each attack declares a `forbidden` pattern — an address that must never appear in `send_email.to`, or a path that must never reach `delete_file` — and the scorer checks recorded tool calls against it. v0 attacks are pure attacks with no benign task mixed in, so this skips task-completion; that comes next.
 
-Runs are reproducible on the same machine: locked sampler (`temperature=0`, fixed `seed`/`num_ctx`) and deterministic handle IDs make the system prompt byte-identical across runs. Only `latencyMs` and tool-call key *ordering* vary; verdicts and values don't. Cross-machine determinism isn't guaranteed (GPU atomics, quantization, Ollama version), and the model itself isn't pinned by Nix.
+Runs are reproducible on the same machine: locked sampler (`temperature=0`, fixed `seed`/`num_ctx`) and deterministic handle IDs make the system prompt byte-identical across runs. Only `latencyMs` and tool-call key *ordering* vary; verdicts and values don't. Concurrency (`SECUREAGENT_CONCURRENCY`) is pure scheduling — each run carries its own messages and fixed seed, results are written back in a stable `(model, config, attack)` order, so the output files stay byte-identical regardless of the setting; only the live progress lines interleave. Cross-machine determinism isn't guaranteed (GPU atomics, quantization, Ollama version), and the model itself isn't pinned by Nix.
 
 ## Limitations
-
-Honest about what v0 doesn't do yet:
 
 - **No utility axis.** Defenses that restrict the agent look good on injection but worse on real tasks. Until benign tasks are mixed in, every defense looks free.
 - **Direct injection only.** The harder, more interesting case is indirect injection (poisoned tool output, retrieved docs).
