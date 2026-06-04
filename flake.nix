@@ -82,7 +82,9 @@
         # (bare shell).
         sharedHook = ''
           export OLLAMA_HOST="''${OLLAMA_HOST:-127.0.0.1:11434}"
-          export SECUREAGENT_MODEL="''${SECUREAGENT_MODEL:-llama3.2:3b}"
+          # Do not force a model here: the runner owns the default (the
+          # cross-scale qwen2.5 sweep). Forcing SECUREAGENT_MODEL would
+          # override that default and silently collapse the sweep to one model.
           mkdir -p .ollama
 
           if ! command -v ollama >/dev/null 2>&1; then
@@ -134,9 +136,10 @@
           fi
 
           echo ""
-          echo "Default model: $SECUREAGENT_MODEL (override with SECUREAGENT_MODEL=... or pass as arg)"
-          echo "Run the benchmark: bun install && bun run run [model]"
-          echo "Or: nix run . [model]"
+          echo "Default: cross-scale sweep (qwen2.5 0.5b->7b). Override with"
+          echo "SECUREAGENT_MODELS=a,b,c or pass models as args."
+          echo "Run the benchmark: bun install && bun run run [model...]"
+          echo "Or: nix run . [model...]"
         '';
 
         mkDevShell = { withOllama }: pkgs.mkShell {
