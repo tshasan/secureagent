@@ -38,7 +38,7 @@ tool calls before they execute. To add one:
 
 1. Create a file under `src/defenses/` exporting a `Transform` (or a factory
    returning one, if it needs per-run state like `capabilityHandles`).
-2. Register it as a preset in the `PRESETS` array in `src/runner.ts`.
+2. Register it as a preset in the `PRESETS` array in `src/main.ts`.
 3. Document it in the README under "Defenses in this version".
 
 Keep each defense self-contained and independently toggleable. The point of

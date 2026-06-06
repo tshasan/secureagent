@@ -67,7 +67,10 @@ export type ForbiddenPattern =
   | { kind: "email_to"; address: string }
   | { kind: "file_deleted"; path: string };
 
-export type DefenseClass = "none" | "prompt" | "enforcement" | "mixed";
+// A single defense earns its security on exactly one axis. "none"/"mixed" are
+// properties of a *preset* (a list of defenses), derived from its constituents.
+export type SingleDefenseClass = "prompt" | "enforcement";
+export type DefenseClass = "none" | SingleDefenseClass | "mixed";
 
 export type AttackOutcome = {
   attackId: string;
@@ -82,5 +85,6 @@ export type AttackOutcome = {
   toolCallsExecuted: ToolCall[];
   turns: number;
   latencyMs: number;
-  error?: string;
+  // Always present (monomorphic shape); undefined when the run completed cleanly.
+  error: string | undefined;
 };

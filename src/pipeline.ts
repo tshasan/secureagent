@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import type { ChatClient } from "./llm.js";
-import type { ToolCall, ToolSpec } from "./types.js";
+import type { SingleDefenseClass, ToolCall, ToolSpec } from "./types.js";
 
 export type StaticCtx = Record<string, never>;
 
@@ -35,6 +35,20 @@ export type Transform = {
   augmentTools?: (tools: ToolSpec[], ctx: StaticCtx) => ToolSpec[];
   rewriteUserInput?: (input: string, ctx: RequestCtx) => Promise<string> | string;
   validateToolCall?: (call: ToolCall, ctx: ExecCtx) => ToolCallVerdict;
+};
+
+// What a defense's build() factory gets handed. Keep run-invariant config here
+// (the seed) so a factory never has to reach for a module-level global.
+export type BuildCtx = { seed: number };
+
+// A self-describing defense: a stable id, the axis it earns its security on, and
+// a factory that produces its Transform. The factory may close over read-only
+// per-defense state (e.g. a capability store); it must not hold mutable per-run
+// state, since one built Transform is shared across every attack and worker.
+export type DefenseDef = {
+  id: string;
+  defenseClass: SingleDefenseClass;
+  build: (ctx: BuildCtx) => Transform;
 };
 
 export class Pipeline {

@@ -15,8 +15,8 @@
   "scripts": {
     "ollama": "bash scripts/serve-ollama.sh",
     "ollama:stop": "bash scripts/serve-ollama.sh stop",
-    "run": "bun run src/runner.ts",
-    "bench": "bash scripts/serve-ollama.sh && bun run src/runner.ts",
+    "run": "bun run src/main.ts",
+    "bench": "bash scripts/serve-ollama.sh && bun run src/main.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {},

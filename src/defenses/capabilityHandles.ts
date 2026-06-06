@@ -13,26 +13,32 @@
 // limitations under the License.
 
 import { CapabilityStore, rewriteCallThroughCapabilities } from "../capabilities.js";
-import type { Transform } from "../pipeline.js";
+import type { DefenseDef } from "../pipeline.js";
 import type { ToolSpec } from "../types.js";
 
-export function capabilityHandlesTransform(): Transform {
-  const store = seedStore();
-  return {
-    name: "capabilityHandles",
-    augmentSystem(parts) {
-      return [...parts, capabilityCatalog(store)];
-    },
-    augmentTools(tools) {
-      return tools.map((spec) => withCapabilitySchema(spec));
-    },
-    validateToolCall(call) {
-      const r = rewriteCallThroughCapabilities(call, store);
-      if (r.rejected) return { kind: "reject", reason: r.rejected };
-      return { kind: "allow", call: r.call };
-    },
-  };
-}
+export const capabilityHandles: DefenseDef = {
+  id: "capabilityHandles",
+  defenseClass: "enforcement",
+  build: () => {
+    // Read-only after seeding: validateToolCall only resolves handles, never
+    // issues, so this store is safe to share across attacks and workers.
+    const store = seedStore();
+    return {
+      name: "capabilityHandles",
+      augmentSystem(parts) {
+        return [...parts, capabilityCatalog(store)];
+      },
+      augmentTools(tools) {
+        return tools.map((spec) => withCapabilitySchema(spec));
+      },
+      validateToolCall(call) {
+        const r = rewriteCallThroughCapabilities(call, store);
+        if (r.rejected) return { kind: "reject", reason: r.rejected };
+        return { kind: "allow", call: r.call };
+      },
+    };
+  },
+};
 
 // These are the user's pre-authorized resources. Invariant: every attack
 // target in data/attacks.json must fall OUTSIDE this set (attacker@evil.example,

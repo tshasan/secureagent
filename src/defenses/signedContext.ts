@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { createHash } from "node:crypto";
-import type { Transform } from "../pipeline.js";
+import type { DefenseDef } from "../pipeline.js";
 
 // Signed context is the enforcement-class analog of typedContext. typedContext
 // asks the model to honor trust labels; an attacker who types a fake
@@ -34,20 +34,24 @@ import type { Transform } from "../pipeline.js";
 // inside a data block). Neutralizing that is a prompt-class job — which is
 // exactly why typed_only vs signed_only isolates the enforcement axis on one
 // mechanism, and why the two can compose.
-export function signedContextTransform(seed: number): Transform {
-  const nonce = deriveNonce(seed);
-  return {
-    name: "signedContext",
-    augmentSystem(parts) {
-      return [...parts, authorityRules(nonce)];
-    },
-    rewriteUserInput(input) {
-      // Defang any structural markup the input tries to smuggle, then wrap the
-      // now-inert content in an authentic, nonce-tagged user block.
-      return `<block auth="${nonce}" trust="user" source="stdin">\n${defang(input)}\n</block>`;
-    },
-  };
-}
+export const signedContext: DefenseDef = {
+  id: "signedContext",
+  defenseClass: "enforcement",
+  build: ({ seed }) => {
+    const nonce = deriveNonce(seed);
+    return {
+      name: "signedContext",
+      augmentSystem(parts) {
+        return [...parts, authorityRules(nonce)];
+      },
+      rewriteUserInput(input) {
+        // Defang any structural markup the input tries to smuggle, then wrap the
+        // now-inert content in an authentic, nonce-tagged user block.
+        return `<block auth="${nonce}" trust="user" source="stdin">\n${defang(input)}\n</block>`;
+      },
+    };
+  },
+};
 
 // Nonce derives from the seed, not random bytes, so the system prompt stays
 // byte-identical across runs (the determinism guarantee). Attacks are authored

@@ -17,10 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgent } from "./agent.js";
 import { mapWithConcurrency } from "./concurrency.js";
-import { capabilityHandlesTransform } from "./defenses/capabilityHandles.js";
-import { dualLlmTransform } from "./defenses/dualLlm.js";
-import { signedContextTransform } from "./defenses/signedContext.js";
-import { typedContextTransform } from "./defenses/typedContext.js";
+import { classOf, getDefense } from "./defenses/index.js";
 import {
   createClient,
   providerEndpoint,
@@ -29,8 +26,8 @@ import {
   resolveProvider,
 } from "./llm.js";
 import { orderByScale, parseParamsB, resolveSweep } from "./models.js";
-import type { Transform } from "./pipeline.js";
-import { renderMatrix, renderScaleAnalysis, summarize, tidyCsv } from "./report.js";
+import type { BuildCtx, Transform } from "./pipeline.js";
+import { type Cell, renderMatrix, renderScaleAnalysis, summarize, tidyCsv } from "./report.js";
 import { injectionSucceeded } from "./scoring.js";
 import type { Attack, AttackOutcome, DefenseClass } from "./types.js";
 
@@ -54,13 +51,13 @@ const SEED = parseSeed(process.env["SECUREAGENT_SEED"]);
 const MAX_TURNS = 6;
 // Every completed run is appended here as one JSON line the moment it finishes,
 // so a crash or Ctrl-C mid-sweep loses nothing. On startup we load it and skip
-// runs already present (transient failures excepted — see shouldSkip), so a
+// runs already present (transient failures excepted — see isRetryable), so a
 // re-run resumes where it left off. Keyed by seed because the seed determines a
 // run's output; changing models or configs is safe (keys simply won't collide).
 // Removed once the final timestamped outputs are written.
 const CHECKPOINT =
   process.env["SECUREAGENT_CHECKPOINT"] ?? join(RESULTS_DIR, `checkpoint-seed-${SEED}.jsonl`);
-// Runs within a single model fire concurrently against Ollama. Models stay
+// Runs within a single model fire concurrently against the provider. Models stay
 // sequential (outer loop), so only one model is resident in memory at a time —
 // the speedup costs no extra VRAM. Concurrency is pure scheduling: each run has
 // its own messages and a fixed seed, so verdicts match a serial run exactly.
@@ -68,37 +65,39 @@ const CHECKPOINT =
 // to actually run in parallel (scripts/serve-ollama.sh sets it).
 const CONCURRENCY = parsePositive(process.env["SECUREAGENT_CONCURRENCY"], 4);
 
+// A preset is a named list of defense ids (see src/defenses/index.ts). Its
+// defenseClass is derived from the constituents, not hand-typed, so the
+// prompt-vs-enforcement axis the study reports is always a property of the
+// mechanisms in the stack. signed_only is typed_only's enforcement twin: same
+// trust-label idea, unforgeable labels — the cleanest single test of the law.
+const PRESETS = {
+  baseline: [],
+  typed_only: ["typedContext"],
+  signed_only: ["signedContext"],
+  caps_only: ["capabilityHandles"],
+  dual_only: ["dualLlm"],
+  "typed+caps": ["typedContext", "capabilityHandles"],
+  all_on: ["dualLlm", "typedContext", "capabilityHandles"],
+} satisfies Record<string, readonly string[]>;
+
+// A preset materialized for a run: its transforms built once (they hold no
+// mutable per-run state, see DefenseDef) and reused across every model × attack.
 type Preset = {
   name: string;
-  // How the defense earns its security. "prompt" defenses depend on the model
-  // honoring instructions (so we expect them to need scale); "enforcement"
-  // defenses block at the runtime regardless of model (so we expect them flat).
+  transforms: Transform[];
   defenseClass: DefenseClass;
-  build: () => Transform[];
 };
 
-const PRESETS: Preset[] = [
-  { name: "baseline", defenseClass: "none", build: () => [] },
-  { name: "typed_only", defenseClass: "prompt", build: () => [typedContextTransform] },
-  // signed_only is typed_only's enforcement twin: same trust-label idea, but the
-  // labels are unforgeable. The pair isolates the prompt-vs-enforcement axis on
-  // one mechanism — the cleanest single test of the cross-scale law.
-  { name: "signed_only", defenseClass: "enforcement", build: () => [signedContextTransform(SEED)] },
-  { name: "caps_only", defenseClass: "enforcement", build: () => [capabilityHandlesTransform()] },
-  { name: "dual_only", defenseClass: "prompt", build: () => [dualLlmTransform] },
-  {
-    name: "typed+caps",
-    defenseClass: "mixed",
-    build: () => [typedContextTransform, capabilityHandlesTransform()],
-  },
-  {
-    name: "all_on",
-    defenseClass: "mixed",
-    build: () => [dualLlmTransform, typedContextTransform, capabilityHandlesTransform()],
-  },
-];
-
-const CLASS_OF = new Map<string, DefenseClass>(PRESETS.map((p) => [p.name, p.defenseClass]));
+function buildPresets(names: string[], ctx: BuildCtx): Preset[] {
+  return names.map((name) => {
+    const ids = PRESETS[name as keyof typeof PRESETS] ?? [];
+    return {
+      name,
+      transforms: ids.map((id) => getDefense(id).build(ctx)),
+      defenseClass: classOf(ids),
+    };
+  });
+}
 
 async function main(): Promise<void> {
   let provider: ProviderName;
@@ -132,16 +131,15 @@ async function main(): Promise<void> {
     }
   }
 
-  const filter = (process.env["SECUREAGENT_CONFIGS"] ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const presets = filter.length > 0 ? PRESETS.filter((p) => filter.includes(p.name)) : PRESETS;
-
+  const filter = parseList(process.env["SECUREAGENT_CONFIGS"]);
+  const allNames = Object.keys(PRESETS);
+  const configNames = filter.length > 0 ? allNames.filter((n) => filter.includes(n)) : allNames;
   // Build each preset's transforms once. They hold no per-run mutable state
   // (the capability store is seeded deterministically and only read during
   // validation), so one instance is safe to share across every run.
-  const built = presets.map((p) => ({ preset: p, transforms: p.build() }));
+  const presets = buildPresets(configNames, { seed: SEED });
+  const classByName = new Map(presets.map((p) => [p.name, p.defenseClass]));
+  const classOfConfig = (name: string): DefenseClass => classByName.get(name) ?? "none";
 
   const attacks = loadAttacks();
   const total = SWEEP.length * presets.length * attacks.length;
@@ -151,9 +149,7 @@ async function main(): Promise<void> {
   // assembled by looking each run up in this order (see below), so files stay
   // byte-identical no matter the concurrency or whether we resumed. Only the
   // live progress lines interleave.
-  const jobs = built.flatMap(({ preset, transforms }) =>
-    attacks.map((atk) => ({ preset, transforms, atk })),
-  );
+  const jobs = presets.flatMap((preset) => attacks.map((atk) => ({ preset, atk })));
 
   // Completed runs, keyed by (model, config, attack). Pre-loaded from the
   // checkpoint so a resumed sweep skips work already done, and grown as new
@@ -165,7 +161,7 @@ async function main(): Promise<void> {
   console.log(`Provider:    ${provider} (${endpoint})`);
   console.log(`Seed:        ${SEED}`);
   console.log(`Concurrency: ${CONCURRENCY}`);
-  console.log(`Configs:     ${presets.map((p) => p.name).join(", ")}`);
+  console.log(`Configs:     ${configNames.join(", ")}`);
   console.log(`Attacks:     ${attacks.length}`);
   console.log(`Total runs:  ${total}`);
   console.log(`Checkpoint:  ${CHECKPOINT}\n`);
@@ -182,7 +178,7 @@ async function main(): Promise<void> {
       console.log(`${model}: resuming, ${skipped} cached, ${todo.length} to run`);
     }
 
-    await mapWithConcurrency(todo, CONCURRENCY, async ({ preset, transforms, atk }) => {
+    await mapWithConcurrency(todo, CONCURRENCY, async ({ preset, atk }) => {
       const t0 = Date.now();
       // Each task is isolated: any throw becomes an error outcome rather than
       // rejecting the pool and discarding every other run's work. runAgent
@@ -191,7 +187,7 @@ async function main(): Promise<void> {
       try {
         const run = await runAgent(
           client,
-          { model, maxTurns: MAX_TURNS, seed: SEED, transforms },
+          { model, maxTurns: MAX_TURNS, seed: SEED, transforms: preset.transforms },
           atk.userInput,
         );
         const latencyMs = Date.now() - t0;
@@ -202,14 +198,14 @@ async function main(): Promise<void> {
           defenseClass: preset.defenseClass,
           model,
           modelParamsB: paramsB,
-          transforms: transforms.map((t) => t.name),
+          transforms: preset.transforms.map((t) => t.name),
           injectionSucceeded: succeeded,
           taskCompleted: !run.error,
           toolCallsAttempted: run.toolCallsAttempted,
           toolCallsExecuted: run.toolCallsExecuted,
           turns: run.turns,
           latencyMs,
-          ...(run.error ? { error: run.error } : {}),
+          error: run.error,
         };
       } catch (e) {
         outcome = {
@@ -218,7 +214,7 @@ async function main(): Promise<void> {
           defenseClass: preset.defenseClass,
           model,
           modelParamsB: paramsB,
-          transforms: transforms.map((t) => t.name),
+          transforms: preset.transforms.map((t) => t.name),
           injectionSucceeded: false,
           taskCompleted: false,
           toolCallsAttempted: [],
@@ -250,10 +246,10 @@ async function main(): Promise<void> {
     }
   }
 
-  writeOutputs(outcomes);
+  const cells = summarize(outcomes, classOfConfig);
+  writeOutputs(outcomes, cells);
   rmSync(CHECKPOINT, { force: true });
 
-  const cells = summarize(outcomes, (c) => CLASS_OF.get(c) ?? "none");
   const configOrder = presets.map((p) => p.name);
   console.log("");
   console.log(renderMatrix(cells, configOrder));
@@ -263,10 +259,10 @@ async function main(): Promise<void> {
 
 function keyOf(model: string, config: string, attackId: string): string {
   // NUL can't appear in any of the parts, so the join is unambiguous.
-  return `${model} ${config} ${attackId}`;
+  return `${model} ${config} ${attackId}`;
 }
 
-// A run worth re-running on resume: only infrastructure failures (Ollama down,
+// A run worth re-running on resume: only infrastructure failures (provider down,
 // an unexpected throw). Deterministic terminal states — a clean result,
 // max_turns_reached, a transform that always fails — are kept as-is.
 function isRetryable(o: AttackOutcome): boolean {
@@ -296,13 +292,13 @@ function loadAttacks(): Attack[] {
   return JSON.parse(readFileSync(path, "utf8")) as Attack[];
 }
 
-function writeOutputs(outcomes: AttackOutcome[]): void {
+function writeOutputs(outcomes: AttackOutcome[], cells: Cell[]): void {
   const dir = RESULTS_DIR;
   mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 
   const csvPath = join(dir, `outcomes-${stamp}.csv`);
-  const header = [
+  const header = csvRow([
     "model",
     "paramsB",
     "attack_id",
@@ -315,22 +311,22 @@ function writeOutputs(outcomes: AttackOutcome[]): void {
     "toolCallsAttempted",
     "toolCallsExecuted",
     "error",
-  ].join(",");
+  ]);
   const rows = outcomes.map((o) =>
-    [
+    csvRow([
       o.model,
       Number.isNaN(o.modelParamsB) ? "" : o.modelParamsB,
       o.attackId,
       o.configName,
       o.defenseClass,
-      `"${o.transforms.join("|")}"`,
+      o.transforms.join("|"),
       o.injectionSucceeded,
       o.turns,
       o.latencyMs,
-      `"${o.toolCallsAttempted.map((c) => c.name).join("|")}"`,
-      `"${o.toolCallsExecuted.map((c) => c.name).join("|")}"`,
+      o.toolCallsAttempted.map((c) => c.name).join("|"),
+      o.toolCallsExecuted.map((c) => c.name).join("|"),
       o.error ?? "",
-    ].join(","),
+    ]),
   );
   writeFileSync(csvPath, [header, ...rows].join("\n"));
 
@@ -339,15 +335,31 @@ function writeOutputs(outcomes: AttackOutcome[]): void {
 
   // Tidy per-(model, config) summary, scale on the x-axis — the file you plot.
   const matrixPath = join(dir, `matrix-${stamp}.csv`);
-  writeFileSync(matrixPath, tidyCsv(summarize(outcomes, (c) => CLASS_OF.get(c) ?? "none")));
+  writeFileSync(matrixPath, tidyCsv(cells));
 
   console.log(`\nWrote ${csvPath}`);
   console.log(`Wrote ${jsonPath}`);
   console.log(`Wrote ${matrixPath}`);
 }
 
+function csvRow(fields: Array<string | number | boolean>): string {
+  return fields.map(csvCell).join(",");
+}
+
+function csvCell(field: string | number | boolean): string {
+  const s = String(field);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
 function positionalArgs(args: string[]): string[] {
   return args.filter((a) => !a.startsWith("-"));
+}
+
+function parseList(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 function parseSeed(raw: string | undefined): number {
@@ -363,8 +375,7 @@ function parsePositive(raw: string | undefined, fallback: number): number {
 }
 
 function errString(e: unknown): string {
-  if (e instanceof Error) return e.message;
-  return String(e);
+  return e instanceof Error ? e.message : String(e);
 }
 
 main().catch((e) => {

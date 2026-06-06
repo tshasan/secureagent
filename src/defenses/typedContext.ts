@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type { Transform } from "../pipeline.js";
+import type { DefenseDef } from "../pipeline.js";
 import type { ContextBlock, Trust } from "../types.js";
 
 const AUTHORITY: Record<Trust, "executable" | "request" | "data_only" | "observation"> = {
@@ -41,12 +41,16 @@ function escape(s: string): string {
   return s.replace(/"/g, "&quot;");
 }
 
-export const typedContextTransform: Transform = {
-  name: "typedContext",
-  augmentSystem(parts) {
-    return [...parts, TYPED_CONTEXT_RULES];
-  },
-  rewriteUserInput(input) {
-    return wrapBlock({ trust: "user", source: "stdin", content: input });
-  },
+export const typedContext: DefenseDef = {
+  id: "typedContext",
+  defenseClass: "prompt",
+  build: () => ({
+    name: "typedContext",
+    augmentSystem(parts) {
+      return [...parts, TYPED_CONTEXT_RULES];
+    },
+    rewriteUserInput(input) {
+      return wrapBlock({ trust: "user", source: "stdin", content: input });
+    },
+  }),
 };
